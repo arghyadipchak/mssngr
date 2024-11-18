@@ -1,13 +1,9 @@
 id = "node2"
 host = "127.0.0.1"
 port = 8081
-
-[[nodes]]
-id = "node1"
-addr = "127.0.0.1:8080"
-topics = ["a"]
-
-[[nodes]]
-id = "node2"
-addr = "127.0.0.1:8081"
 topics = ["b"]
+
+[[forward]]
+id = "node1"
+addr = "http://127.0.0.1:8080"
+topics = ["a"]

@@ -1,10 +1,18 @@
 use std::{
-  collections::HashSet,
   env, fs, io,
   net::{IpAddr, Ipv4Addr},
 };
 
 use serde::Deserialize;
+use url::Url;
+
+const fn default_host() -> IpAddr {
+  IpAddr::V4(Ipv4Addr::LOCALHOST)
+}
+
+const fn default_port() -> u16 {
+  8080
+}
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
@@ -13,22 +21,21 @@ pub struct Config {
   #[serde(default = "default_host")]
   pub host: IpAddr,
 
-  #[serde(default)]
+  #[serde(default = "default_port")]
   pub port: u16,
 
   #[serde(default)]
-  pub nodes: Vec<Node>,
+  pub topics: Vec<String>,
+
+  #[serde(default)]
+  pub forward: Vec<Node>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct Node {
   pub id: String,
-  pub addr: String,
-  pub topics: HashSet<String>,
-}
-
-fn default_host() -> IpAddr {
-  IpAddr::V4(Ipv4Addr::LOCALHOST)
+  pub addr: Url,
+  pub topics: Vec<String>,
 }
 
 #[derive(Debug, thiserror::Error)]

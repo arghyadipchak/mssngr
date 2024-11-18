@@ -1,31 +1,40 @@
-use std::{
-  collections::{HashMap, HashSet},
-  sync::{Arc, Mutex},
-};
+use std::{collections::HashMap, sync::Arc};
+
+use tokio::sync::{broadcast, Mutex};
 
 use crate::config::Node;
 
 #[derive(Clone)]
 pub struct AppState {
-  pub redir_map: Arc<Vec<(String, HashSet<String>)>>,
-  pub msg_queue: Arc<HashMap<String, Arc<Mutex<Vec<String>>>>>,
+  pub fwd_map: Arc<HashMap<String, Arc<Node>>>,
+  pub topics: Arc<HashMap<String, Arc<Mutex<broadcast::Sender<String>>>>>,
 }
 
 impl AppState {
-  pub fn new(topics: Vec<String>, redir_nodes: Vec<Node>) -> Self {
+  pub fn new(topics: Vec<String>, fwd_nodes: Vec<Node>) -> Self {
+    let fwd_map = fwd_nodes
+      .into_iter()
+      .flat_map(|node| {
+        let node = Arc::new(node);
+        node
+          .topics
+          .clone()
+          .into_iter()
+          .map(move |topic| (topic, node.clone()))
+      })
+      .collect();
+
+    let topics = topics
+      .into_iter()
+      .map(|topic| {
+        let (tx, _) = broadcast::channel(1);
+        (topic, Arc::new(Mutex::new(tx)))
+      })
+      .collect();
+
     Self {
-      redir_map: Arc::new(
-        redir_nodes
-          .into_iter()
-          .map(|n| (n.addr, n.topics))
-          .collect(),
-      ),
-      msg_queue: Arc::new(
-        topics
-          .into_iter()
-          .map(|topic| (topic, Arc::new(Mutex::new(Vec::new()))))
-          .collect(),
-      ),
+      fwd_map: Arc::new(fwd_map),
+      topics: Arc::new(topics),
     }
   }
 }

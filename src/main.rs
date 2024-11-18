@@ -23,21 +23,12 @@ async fn main() {
     .init();
 
   let config = Config::read().unwrap();
-
-  let (mut this_node, other_nodes): (Vec<_>, Vec<_>) =
-    config.nodes.into_iter().partition(|n| n.id == config.id);
-
-  let state = AppState::new(
-    this_node
-      .pop()
-      .map(|n| n.topics.into_iter().collect())
-      .unwrap_or_default(),
-    other_nodes,
-  );
+  let state = AppState::new(config.topics, config.forward);
 
   let app = Router::new()
     .route("/", routing::get(index))
     .route("/publish/:topic", routing::post(publish))
+    .route("/subscribe/:topic", routing::get(subscribe))
     .with_state(state)
     .layer(TraceLayer::new_for_http());
 
@@ -50,9 +41,13 @@ async fn main() {
       }
     };
 
-  tracing::debug!("server listening on {}", listener.local_addr().unwrap());
+  tracing::debug!(
+    "node: {} listening on {}",
+    config.id,
+    listener.local_addr().unwrap()
+  );
 
   if let Err(err) = axum::serve(listener, app).await {
-    tracing::error!("serving app: {}", err);
+    tracing::error!("serving: {}", err);
   }
 }
