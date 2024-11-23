@@ -32,10 +32,10 @@ async fn main() {
     }
   };
 
-  let (event_tx, event_rx) = mpsc::channel(config.max_queue);
+  let (msg_tx, msg_rx) = mpsc::channel(config.max_queue);
   let (listen_tx, listen_rx) = mpsc::channel(100);
 
-  let state = AppState::new(config.topics, config.forward, event_tx, listen_tx);
+  let state = AppState::new(config.topics, config.forward, msg_tx, listen_tx);
 
   let app = Router::new()
     .route("/", routing::get(endpoint::index))
@@ -59,13 +59,14 @@ async fn main() {
     listener.local_addr().unwrap()
   );
 
-  let rx = Arc::new(Mutex::new(event_rx));
+  let rx = Arc::new(Mutex::new(msg_rx));
   for _ in 0..config.workers {
     let rx = rx.clone();
     tokio::spawn(worker::broker(rx, state.clone()));
   }
 
-  tokio::spawn(worker::ws_listener(listen_rx, state));
+  tokio::spawn(worker::ws_listener(listen_rx, state.clone()));
+  tokio::spawn(worker::cleaner(state, config.persistence));
 
   if let Err(err) = axum::serve(listener, app).await {
     tracing::error!("serving: {}", err);

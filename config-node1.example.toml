@@ -4,6 +4,7 @@ port = 8080
 topics = ["a"]
 max_queue = 1000
 workers = 4
+persistence = 5
 
 [[forward]]
 id = "node2"

@@ -1,10 +1,13 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use axum::extract::ws::Message;
 use chrono::{DateTime, Local};
 use futures_util::{stream::FuturesUnordered, SinkExt as _, StreamExt as _};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc::Receiver, Mutex};
+use tokio::{
+  sync::{mpsc::Receiver, Mutex},
+  time,
+};
 use uuid::Uuid;
 
 use crate::model::{AppState, ListenEvent, Mode, MsgEvent, Priority};
@@ -25,53 +28,46 @@ pub async fn broker(rx: Arc<Mutex<Receiver<MsgEvent>>>, state: AppState) {
       continue;
     };
 
+    let push_txt = serde_json::to_string(&event).unwrap_or_default();
+    let pull_txt = serde_json::to_string(&PullData {
+      id: event.id,
+      timestamp: event.timestamp,
+    })
+    .unwrap_or_default();
+
+    topic.msg_events.insert(event.id, event.clone());
+
     for sub in topic.subscribers.iter() {
       let meta = sub.meta.read().await;
       if event.priority < meta.priority {
         tracing::debug!(
-          "subscriber skipped :: topic: {} | msg_id: {} | sub_id: {}",
+          "subscriber skipped :: topic: {} | sub_id: {} | msg_id: {}",
           event.topic,
-          event.id,
-          sub.id
+          sub.id,
+          event.id
         );
         continue;
       }
 
-      let msg = match meta.mode {
-        Mode::Push => serde_json::to_string(&event),
-        Mode::Pull => serde_json::to_string(&PullData {
-          id: event.id,
-          timestamp: event.timestamp,
-        }),
-      };
-      let msg_text = match msg {
-        Ok(m) => Message::Text(m),
-        Err(err) => {
-          tracing::error!(
-            "subscriber notification serialization :: topic: {} | msg_id: {} | sub_id: {} | error: {}",
+      let msg = Message::Text(match sub.meta.read().await.mode {
+        Mode::Push => push_txt.clone(),
+        Mode::Pull => pull_txt.clone(),
+      });
+
+      if let Err(err) = sub.ws.lock().await.send(msg).await {
+        tracing::error!(
+            "subscriber notify :: topic: {} | sub_id: {} | msg_id: {} | error: {}",
             event.topic,
-            event.id,
             sub.id,
+            event.id,
             err
           );
-          continue;
-        }
-      };
-
-      if let Err(err) = sub.ws.lock().await.send(msg_text).await {
-        tracing::info!(
-          "subscriber notified :: topic: {} | msg_id: {} | sub_id: {} | error: {}",
-          event.topic,
-          event.id,
-          sub.id,
-          err
-        );
       } else {
         tracing::info!(
-          "subscriber notification :: topic: {} | msg_id: {} | sub_id: {}",
+          "subscriber notify :: topic: {} | sub_id: {} | msg_id: {}",
           event.topic,
-          event.id,
-          sub.id
+          sub.id,
+          event.id
         );
       }
     }
@@ -111,6 +107,9 @@ enum WsMessage {
     mode: Option<Mode>,
     priority: Option<Priority>,
   },
+  Fetch {
+    id: Uuid,
+  },
 }
 
 async fn handle_listen(
@@ -145,6 +144,39 @@ async fn handle_listen(
               listen_event.sub_id
             );
           }
+          Ok(WsMessage::Fetch { id }) => {
+            if let Some(msg_event) = topic.msg_events.get(&id) {
+              if let Some(sub) = topic.subscribers.get(&listen_event.sub_id) {
+                let msg = Message::Text(
+                  serde_json::to_string(&msg_event.clone()).unwrap_or_default(),
+                );
+
+                if let Err(err) = sub.ws.lock().await.send(msg).await {
+                  tracing::error!(
+                    "subscriber fetch :: topic: {} | sub_id: {} | msg_id: {} | error: {}",
+                    msg_event.topic,
+                    sub.id,
+                    id,
+                    err
+                  );
+                } else {
+                  tracing::info!(
+                    "subscriber fetch :: topic: {} | sub_id: {} | msg_id: {}",
+                    msg_event.topic,
+                    sub.id,
+                    id
+                  );
+                }
+              }
+            } else {
+              tracing::debug!(
+                "subscriber fetch message not found :: topic: {} | sub_id: {} | msg_id: {}",
+                listen_event.topic,
+                listen_event.sub_id,
+                id
+              );
+            }
+          }
           _ => {
             tracing::debug!(
               "websocket unknown message :: sub_id: {}",
@@ -161,5 +193,20 @@ async fn handle_listen(
     Some(listen_event)
   } else {
     None
+  }
+}
+
+pub async fn cleaner(state: AppState, interval: Duration) {
+  loop {
+    time::sleep(interval).await;
+    let now = Local::now();
+
+    for (topic_name, topic) in state.topics.iter() {
+      tracing::info!("cleaning :: topic: {}", topic_name);
+
+      topic.msg_events.retain(|_, msg_event| {
+        (now - msg_event.timestamp).to_std().unwrap_or_default() < interval
+      });
+    }
   }
 }

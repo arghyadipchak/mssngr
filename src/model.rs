@@ -10,7 +10,9 @@ use uuid::Uuid;
 
 use crate::config::Node;
 
-#[derive(Default, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+  Clone, Default, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Priority {
   #[default]
@@ -52,21 +54,13 @@ impl Subscriber {
   }
 }
 
+#[derive(Default)]
 pub struct Topic {
-  pub name: String,
-  pub subscribers: Arc<DashMap<Uuid, Subscriber>>,
+  pub subscribers: DashMap<Uuid, Subscriber>,
+  pub msg_events: DashMap<Uuid, MsgEvent>,
 }
 
-impl Topic {
-  fn new(name: String) -> Self {
-    Self {
-      name,
-      subscribers: Arc::new(DashMap::new()),
-    }
-  }
-}
-
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct MsgEvent {
   pub id: Uuid,
   pub topic: String,
@@ -84,16 +78,16 @@ pub struct ListenEvent {
 #[derive(Clone)]
 pub struct AppState {
   pub fwd_map: Arc<HashMap<String, Arc<Node>>>,
-  pub topics: Arc<HashMap<String, Arc<Topic>>>,
-  pub msg_event_tx: Sender<MsgEvent>,
-  pub listen_event_tx: Sender<ListenEvent>,
+  pub topics: Arc<HashMap<String, Topic>>,
+  pub msg_tx: Sender<MsgEvent>,
+  pub listen_tx: Sender<ListenEvent>,
 }
 
 impl AppState {
   pub fn new(
     topics: Vec<String>,
     fwd_nodes: Vec<Node>,
-    event_tx: Sender<MsgEvent>,
+    msg_tx: Sender<MsgEvent>,
     listen_tx: Sender<ListenEvent>,
   ) -> Self {
     let fwd_map = fwd_nodes
@@ -110,14 +104,14 @@ impl AppState {
 
     let topics = topics
       .into_iter()
-      .map(|topic| (topic.clone(), Arc::new(Topic::new(topic))))
+      .map(|topic| (topic, Topic::default()))
       .collect();
 
     Self {
       fwd_map: Arc::new(fwd_map),
       topics: Arc::new(topics),
-      msg_event_tx: event_tx,
-      listen_event_tx: listen_tx,
+      msg_tx,
+      listen_tx,
     }
   }
 }

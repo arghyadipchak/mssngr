@@ -1,9 +1,10 @@
 use std::{
   env, fs, io,
   net::{IpAddr, Ipv4Addr},
+  time::Duration,
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use url::Url;
 
 const fn default_host() -> IpAddr {
@@ -20,6 +21,10 @@ const fn default_max_queue() -> usize {
 
 const fn default_workers() -> usize {
   4
+}
+
+fn default_persistence() -> Duration {
+  Duration::from_secs(300)
 }
 
 #[derive(Deserialize)]
@@ -43,6 +48,19 @@ pub struct Config {
 
   #[serde(default)]
   pub forward: Vec<Node>,
+
+  #[serde(
+    default = "default_persistence",
+    deserialize_with = "deserialize_duration"
+  )]
+  pub persistence: Duration,
+}
+
+fn deserialize_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
+where
+  D: Deserializer<'de>,
+{
+  Ok(Duration::from_secs(u64::deserialize(deserializer)?) * 60)
 }
 
 #[derive(Deserialize)]

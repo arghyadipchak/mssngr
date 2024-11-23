@@ -51,7 +51,7 @@ pub async fn publish(
     let event = MsgEvent::from(payload);
     let id = event.id;
 
-    return match state.msg_event_tx.send(event).await {
+    return match state.msg_tx.send(event).await {
       Ok(()) => {
         tracing::info!("message queued :: topic: {} | id: {}", topic, id);
         StatusCode::CREATED
@@ -131,7 +131,7 @@ async fn handle_ws(
     sub_id: sub.id,
   };
 
-  match state.listen_event_tx.send(sub_listen).await {
+  match state.listen_tx.send(sub_listen).await {
     Ok(()) => {
       tracing::info!(
         "subscriber registered :: topic: {} | id: {}",
