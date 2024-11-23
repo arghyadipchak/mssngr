@@ -41,7 +41,7 @@ async fn main() {
     .route("/", routing::get(endpoint::index))
     .route("/publish", routing::post(endpoint::publish))
     .route("/subscribe/:topic", routing::get(endpoint::subscribe))
-    .with_state(state)
+    .with_state(state.clone())
     .layer(TraceLayer::new_for_http());
 
   let listener =
@@ -62,10 +62,10 @@ async fn main() {
   let rx = Arc::new(Mutex::new(event_rx));
   for _ in 0..config.workers {
     let rx = rx.clone();
-    tokio::spawn(worker::broker(rx));
+    tokio::spawn(worker::broker(rx, state.clone()));
   }
 
-  tokio::spawn(worker::sub_listener(listen_rx));
+  tokio::spawn(worker::ws_listener(listen_rx, state));
 
   if let Err(err) = axum::serve(listener, app).await {
     tracing::error!("serving: {}", err);

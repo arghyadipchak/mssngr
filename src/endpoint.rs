@@ -1,7 +1,5 @@
-use std::sync::Arc;
-
 use axum::{
-  extract::{ws::WebSocket, Path, State, WebSocketUpgrade},
+  extract::{ws::WebSocket, Path, Query, State, WebSocketUpgrade},
   http::StatusCode,
   response::{IntoResponse, Redirect, Response},
   Json,
@@ -9,11 +7,11 @@ use axum::{
 use chrono::Local;
 use futures_util::StreamExt;
 use serde::Deserialize;
-use tokio::sync::{mpsc::Sender, Mutex, RwLock};
+
 use uuid::Uuid;
 
 use crate::model::{
-  AppState, Event, Priority, SubFilter, SubListen, Subscriber, Topic,
+  AppState, ListenEvent, Meta, MsgEvent, Priority, Subscriber,
 };
 
 #[axum::debug_handler]
@@ -23,11 +21,23 @@ pub async fn index() -> StatusCode {
 
 #[derive(Deserialize)]
 pub struct Payload {
-  pub topic: String,
-  pub content: String,
+  topic: String,
+  content: String,
 
   #[serde(default)]
-  pub priority: Priority,
+  priority: Priority,
+}
+
+impl From<Payload> for MsgEvent {
+  fn from(payload: Payload) -> Self {
+    Self {
+      id: Uuid::new_v4(),
+      topic: payload.topic,
+      content: payload.content,
+      priority: payload.priority,
+      timestamp: Local::now(),
+    }
+  }
 }
 
 #[axum::debug_handler]
@@ -35,31 +45,21 @@ pub async fn publish(
   State(state): State<AppState>,
   Json(payload): Json<Payload>,
 ) -> Response {
-  let tstamp = Local::now();
+  let topic = payload.topic.clone();
 
-  if let Some(tp) = state.topics.get(&payload.topic) {
-    let id = Uuid::new_v4();
-    let event = Event {
-      id,
-      topic: tp.clone(),
-      content: payload.content,
-      priority: payload.priority,
-      timestamp: tstamp,
-    };
+  if state.topics.contains_key(&topic) {
+    let event = MsgEvent::from(payload);
+    let id = event.id;
 
-    return match state.event_tx.send(event).await {
+    return match state.msg_event_tx.send(event).await {
       Ok(()) => {
-        tracing::info!(
-          "message queued :: topic: {} | id: {}",
-          payload.topic,
-          id
-        );
+        tracing::info!("message queued :: topic: {} | id: {}", topic, id);
         StatusCode::CREATED
       }
       Err(err) => {
         tracing::error!(
           "message queue :: topic: {} | id: {} | error: {}",
-          payload.topic,
+          topic,
           id,
           err
         );
@@ -69,10 +69,10 @@ pub async fn publish(
     .into_response();
   }
 
-  if let Some(node) = state.fwd_map.get(&payload.topic) {
+  if let Some(node) = state.fwd_map.get(&topic) {
     tracing::info!(
       "redirection :: topic: {} | node: {} ({})",
-      payload.topic,
+      topic,
       node.id,
       node.addr
     );
@@ -81,22 +81,22 @@ pub async fn publish(
       .into_response();
   }
 
-  tracing::debug!("not found :: topic: {}", payload.topic);
+  tracing::debug!("not found :: topic: {}", topic);
   StatusCode::BAD_REQUEST.into_response()
 }
 
 #[axum::debug_handler]
 pub async fn subscribe(
   Path(topic): Path<String>,
+  Query(meta): Query<Meta>,
   State(state): State<AppState>,
   ws: WebSocketUpgrade,
 ) -> Response {
-  if let Some(topic_state) = state.topics.get(&topic) {
+  if state.topics.contains_key(&topic) {
     tracing::info!("subcriber connection :: topic: {}", topic);
 
-    let topic = topic_state.clone();
     return ws
-      .on_upgrade(|socket| handle_ws(socket, topic, state.listen_tx))
+      .on_upgrade(|socket| handle_ws(socket, meta, topic, state))
       .into_response();
   }
 
@@ -118,39 +118,35 @@ pub async fn subscribe(
 
 async fn handle_ws(
   socket: WebSocket,
-  topic: Arc<Topic>,
-  tx: Sender<SubListen>,
+  meta: Meta,
+  topic: String,
+  state: AppState,
 ) {
-  let id = Uuid::new_v4();
   let (ws_tx, ws_rx) = socket.split();
 
-  let sub = Subscriber {
-    id,
-    ws: Mutex::new(ws_tx),
-    filter: RwLock::new(SubFilter {
-      priority: Priority::default(),
-    }),
-  };
-  let sub_listen = SubListen {
+  let sub = Subscriber::new(meta, ws_tx);
+  let sub_listen = ListenEvent {
     ws: ws_rx,
     topic: topic.clone(),
-    sub_id: id,
+    sub_id: sub.id,
   };
 
-  match tx.send(sub_listen).await {
+  match state.listen_event_tx.send(sub_listen).await {
     Ok(()) => {
       tracing::info!(
         "subscriber registered :: topic: {} | id: {}",
-        topic.name,
-        id
+        topic,
+        sub.id
       );
-      topic.subscribers.insert(id, sub);
+      if let Some(topic_state) = state.topics.get(&topic) {
+        topic_state.subscribers.insert(sub.id, sub);
+      }
     }
     Err(err) => {
       tracing::info!(
         "subscriber registration :: topic: {} | id: {} | error: {}",
-        topic.name,
-        id,
+        topic,
+        sub.id,
         err
       );
     }
