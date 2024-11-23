@@ -24,11 +24,18 @@ async fn main() {
     .with_timer(ChronoLocal::new(TIMESTAMP_FMT.to_string()))
     .init();
 
-  let config = Config::read().unwrap();
+  let config = match Config::read() {
+    Ok(c) => c,
+    Err(err) => {
+      eprintln!("config error: {err}");
+      return;
+    }
+  };
 
   let (event_tx, event_rx) = mpsc::channel(config.max_queue);
+  let (listen_tx, listen_rx) = mpsc::channel(100);
 
-  let state = AppState::new(config.topics, config.forward, event_tx);
+  let state = AppState::new(config.topics, config.forward, event_tx, listen_tx);
 
   let app = Router::new()
     .route("/", routing::get(endpoint::index))
@@ -47,15 +54,18 @@ async fn main() {
     };
 
   tracing::info!(
-    "node: {} listening on {}",
+    "node: {} | listening on {}",
     config.id,
     listener.local_addr().unwrap()
   );
 
   let rx = Arc::new(Mutex::new(event_rx));
   for _ in 0..config.workers {
-    tokio::spawn(worker::broker(rx.clone()));
+    let rx = rx.clone();
+    tokio::spawn(worker::broker(rx));
   }
+
+  tokio::spawn(worker::sub_listener(listen_rx));
 
   if let Err(err) = axum::serve(listener, app).await {
     tracing::error!("serving: {}", err);
