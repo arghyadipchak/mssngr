@@ -1,58 +1,68 @@
 use axum::{
-  extract::{
-    ws::{Message, WebSocket},
-    Path, State, WebSocketUpgrade,
-  },
+  extract::{Path, State, WebSocketUpgrade},
   http::StatusCode,
   response::{IntoResponse, Redirect, Response},
   Json,
 };
-use futures_util::{SinkExt, StreamExt};
+use chrono::Local;
+use futures::StreamExt as _;
 use serde::Deserialize;
-use tokio::sync::broadcast;
+use tokio::sync::{Mutex, RwLock};
+use uuid::Uuid;
 
-use crate::model::AppState;
+use crate::model::{AppState, Event, Priority, SubFilter, Subscriber};
 
 #[axum::debug_handler]
 pub async fn index() -> StatusCode {
   StatusCode::OK
 }
 
-#[derive(Debug, Deserialize)]
-pub struct PublishData {
-  content: String,
+#[derive(Deserialize)]
+pub struct Payload {
+  pub topic: String,
+  pub content: String,
+
+  #[serde(default)]
+  pub priority: Priority,
 }
 
 #[axum::debug_handler]
 pub async fn publish(
-  Path(topic): Path<String>,
   State(state): State<AppState>,
-  Json(payload): Json<PublishData>,
+  Json(payload): Json<Payload>,
 ) -> Response {
-  if let Some(txl) = state.topics.get(&topic) {
-    let tx = txl.lock().await;
+  let tstamp = Local::now();
 
-    return match tx.send(payload.content) {
-      Ok(_) => {
-        tracing::info!("broadcast :: topic: {}", topic);
+  if let Some(tp) = state.topics.get(&payload.topic) {
+    let event = Event {
+      id: Uuid::new_v4(),
+      topic: tp.clone(),
+      content: payload.content,
+      priority: payload.priority,
+      timestamp: tstamp,
+    };
+
+    return match state.event_tx.send(event).await {
+      Ok(()) => {
+        tracing::info!("broadcast :: topic: {}", payload.topic);
         StatusCode::CREATED
       }
       Err(err) => {
-        tracing::error!("broadcast :: topic: {} error: {}", topic, err);
+        tracing::error!("broadcast :: topic: {} error: {}", payload.topic, err);
         StatusCode::INTERNAL_SERVER_ERROR
       }
     }
     .into_response();
   }
 
-  if let Some(node) = state.fwd_map.get(&topic) {
+  if let Some(node) = state.fwd_map.get(&payload.topic) {
     tracing::info!("redirection :: node: {} ({})", node.id, node.addr);
 
-    return Redirect::temporary(&format!("{}publish/{topic}", node.addr))
+    return Redirect::temporary(&format!("{}publish", node.addr))
       .into_response();
   }
 
-  StatusCode::BAD_GATEWAY.into_response()
+  StatusCode::BAD_REQUEST.into_response()
 }
 
 #[axum::debug_handler]
@@ -61,14 +71,22 @@ pub async fn subscribe(
   State(state): State<AppState>,
   ws: WebSocketUpgrade,
 ) -> Response {
-  if let Some(txl) = state.topics.get(&topic) {
-    let tx = txl.lock().await;
-    let rx = tx.subscribe();
-
+  if let Some(tp) = state.topics.get(&topic) {
     tracing::info!("subscribed :: topic: {}", topic);
 
+    let tp = tp.clone();
     return ws
-      .on_upgrade(move |socket| handle_ws(socket, topic, rx))
+      .on_upgrade(|socket| async move {
+        let (tx, _) = socket.split();
+
+        let sub = Subscriber {
+          ws: Mutex::new(tx),
+          filter: RwLock::new(SubFilter {
+            priority: Priority::default(),
+          }),
+        };
+        tp.subscribers.write().await.push(sub);
+      })
       .into_response();
   }
 
@@ -80,27 +98,4 @@ pub async fn subscribe(
   }
 
   StatusCode::BAD_GATEWAY.into_response()
-}
-
-async fn handle_ws(
-  socket: WebSocket,
-  topic: String,
-  mut rx: broadcast::Receiver<String>,
-) {
-  let (mut ws_tx, _) = socket.split();
-
-  loop {
-    match rx.recv().await {
-      Ok(content) => {
-        if let Err(err) = ws_tx.send(Message::Text(content)).await {
-          tracing::error!("ws_sender :: topic: {} error: {}", topic, err);
-          break;
-        }
-      }
-      Err(err) => {
-        tracing::error!("receiver :: topic: {} error: {}", topic, err);
-        break;
-      }
-    }
-  }
 }

@@ -1,17 +1,19 @@
 mod config;
 mod endpoint;
 mod model;
+mod worker;
 
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc};
 
 use axum::{routing, Router};
-use tokio::net::TcpListener;
+use tokio::{
+  net::TcpListener,
+  sync::{mpsc, Mutex},
+};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{fmt::time::ChronoLocal, EnvFilter};
 
-use crate::config::Config;
-use crate::endpoint::*;
-use crate::model::AppState;
+use crate::{config::Config, model::AppState};
 
 const TIMESTAMP_FMT: &str = "%Y-%m-%dT%H:%M:%S%:z";
 
@@ -23,12 +25,15 @@ async fn main() {
     .init();
 
   let config = Config::read().unwrap();
-  let state = AppState::new(config.topics, config.forward);
+
+  let (event_tx, event_rx) = mpsc::channel(config.max_queue);
+
+  let state = AppState::new(config.topics, config.forward, event_tx);
 
   let app = Router::new()
-    .route("/", routing::get(index))
-    .route("/publish/:topic", routing::post(publish))
-    .route("/subscribe/:topic", routing::get(subscribe))
+    .route("/", routing::get(endpoint::index))
+    .route("/publish", routing::post(endpoint::publish))
+    .route("/subscribe/:topic", routing::get(endpoint::subscribe))
     .with_state(state)
     .layer(TraceLayer::new_for_http());
 
@@ -41,11 +46,16 @@ async fn main() {
       }
     };
 
-  tracing::debug!(
+  tracing::info!(
     "node: {} listening on {}",
     config.id,
     listener.local_addr().unwrap()
   );
+
+  let rx = Arc::new(Mutex::new(event_rx));
+  for _ in 0..config.workers {
+    tokio::spawn(worker::broker(rx.clone()));
+  }
 
   if let Err(err) = axum::serve(listener, app).await {
     tracing::error!("serving: {}", err);

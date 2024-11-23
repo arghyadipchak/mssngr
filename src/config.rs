@@ -14,7 +14,15 @@ const fn default_port() -> u16 {
   8080
 }
 
-#[derive(Debug, Deserialize)]
+const fn default_max_queue() -> usize {
+  1000
+}
+
+const fn default_workers() -> usize {
+  4
+}
+
+#[derive(Deserialize)]
 pub struct Config {
   pub id: String,
 
@@ -27,11 +35,17 @@ pub struct Config {
   #[serde(default)]
   pub topics: Vec<String>,
 
+  #[serde(default = "default_max_queue")]
+  pub max_queue: usize,
+
+  #[serde(default = "default_workers")]
+  pub workers: usize,
+
   #[serde(default)]
   pub forward: Vec<Node>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct Node {
   pub id: String,
   pub addr: Url,
