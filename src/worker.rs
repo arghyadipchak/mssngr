@@ -22,8 +22,8 @@ pub async fn broker(rx: Arc<Mutex<Receiver<MsgEvent>>>, state: AppState) {
   tracing::info!("broker spawned");
 
   while let Some(event) = rx.lock().await.recv().await {
-    let topic = if let Some(topic) = state.topics.get(&event.topic) {
-      topic
+    let topic_state = if let Some(t) = state.topics.get(&event.topic) {
+      t
     } else {
       continue;
     };
@@ -35,9 +35,9 @@ pub async fn broker(rx: Arc<Mutex<Receiver<MsgEvent>>>, state: AppState) {
     })
     .unwrap_or_default();
 
-    topic.msg_events.insert(event.id, event.clone());
+    topic_state.msg_events.insert(event.id, event.clone());
 
-    for sub in topic.subscribers.iter() {
+    for sub in topic_state.subscribers.iter() {
       let meta = sub.meta.read().await;
       if event.priority < meta.priority {
         tracing::debug!(
@@ -119,17 +119,17 @@ async fn handle_listen(
   let (res, ws_rx) = listen_event.ws.into_future().await;
 
   if let Some(msg) = res {
-    let topic = state.topics.get(&listen_event.topic)?;
+    let topic_state = state.topics.get(&listen_event.topic)?;
 
     match msg {
       Ok(Message::Close(_)) => {
-        topic.subscribers.remove(&listen_event.sub_id);
+        topic_state.subscribers.remove(&listen_event.sub_id);
         tracing::info!("subscriber closed :: id: {}", &listen_event.sub_id);
       }
       Ok(Message::Text(txt)) => {
         match serde_json::from_str::<WsMessage>(&txt) {
           Ok(WsMessage::Update { mode, priority }) => {
-            let sub = topic.subscribers.get(&listen_event.sub_id)?;
+            let sub = topic_state.subscribers.get(&listen_event.sub_id)?;
             let mut meta = sub.meta.write().await;
 
             if let Some(mode) = mode {
@@ -145,8 +145,10 @@ async fn handle_listen(
             );
           }
           Ok(WsMessage::Fetch { id }) => {
-            if let Some(msg_event) = topic.msg_events.get(&id) {
-              if let Some(sub) = topic.subscribers.get(&listen_event.sub_id) {
+            if let Some(msg_event) = topic_state.msg_events.get(&id) {
+              if let Some(sub) =
+                topic_state.subscribers.get(&listen_event.sub_id)
+              {
                 let msg = Message::Text(
                   serde_json::to_string(&msg_event.clone()).unwrap_or_default(),
                 );
@@ -201,10 +203,10 @@ pub async fn cleaner(state: AppState, interval: Duration) {
     time::sleep(interval).await;
     let now = Local::now();
 
-    for (topic_name, topic) in state.topics.iter() {
-      tracing::info!("cleaning :: topic: {}", topic_name);
+    for (topic, topic_state) in state.topics.iter() {
+      tracing::info!("cleaning :: topic: {}", topic);
 
-      topic.msg_events.retain(|_, msg_event| {
+      topic_state.msg_events.retain(|_, msg_event| {
         (now - msg_event.timestamp).to_std().unwrap_or_default() < interval
       });
     }
