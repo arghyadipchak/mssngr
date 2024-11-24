@@ -8,26 +8,6 @@ use regex::Regex;
 use serde::{de, Deserialize, Deserializer};
 use url::Url;
 
-const fn default_host() -> IpAddr {
-  IpAddr::V4(Ipv4Addr::LOCALHOST)
-}
-
-const fn default_port() -> u16 {
-  8080
-}
-
-const fn default_max_queue() -> usize {
-  1000
-}
-
-const fn default_workers() -> usize {
-  4
-}
-
-fn default_persistence() -> Duration {
-  Duration::from_secs(300)
-}
-
 #[derive(Deserialize)]
 pub struct Config {
   pub id: String,
@@ -44,17 +24,33 @@ pub struct Config {
   #[serde(default = "default_max_queue")]
   pub max_queue: usize,
 
-  #[serde(default = "default_workers")]
-  pub workers: usize,
-
-  #[serde(default)]
-  pub forward: Vec<Node>,
-
   #[serde(
     default = "default_persistence",
     deserialize_with = "deserialize_duration"
   )]
   pub persistence: Duration,
+
+  #[serde(default)]
+  pub pool: Pool,
+
+  #[serde(default)]
+  pub forward: Vec<Node>,
+}
+
+const fn default_host() -> IpAddr {
+  IpAddr::V4(Ipv4Addr::LOCALHOST)
+}
+
+const fn default_port() -> u16 {
+  8080
+}
+
+const fn default_max_queue() -> usize {
+  1024
+}
+
+const fn default_persistence() -> Duration {
+  Duration::from_secs(300)
 }
 
 fn deserialize_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
@@ -82,6 +78,21 @@ where
     Ok(Duration::from_secs(total_sec))
   } else {
     Err(de::Error::custom("invalid format"))
+  }
+}
+
+#[derive(Deserialize)]
+pub struct Pool {
+  pub threads: usize,
+  pub brokers: usize,
+}
+
+impl Default for Pool {
+  fn default() -> Self {
+    Self {
+      threads: 8,
+      brokers: 4,
+    }
   }
 }
 

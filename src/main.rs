@@ -8,6 +8,7 @@ use std::{net::SocketAddr, sync::Arc};
 use axum::{routing, Router};
 use tokio::{
   net::TcpListener,
+  runtime::Builder,
   sync::{mpsc, Mutex},
 };
 use tower_http::trace::TraceLayer;
@@ -17,13 +18,7 @@ use crate::{config::Config, model::AppState};
 
 const TIMESTAMP_FMT: &str = "%Y-%m-%dT%H:%M:%S%:z";
 
-#[tokio::main]
-async fn main() {
-  tracing_subscriber::fmt()
-    .with_env_filter(EnvFilter::from_env("MSSNGR_LOG"))
-    .with_timer(ChronoLocal::new(TIMESTAMP_FMT.to_string()))
-    .init();
-
+fn main() {
   let config = match Config::read() {
     Ok(c) => c,
     Err(err) => {
@@ -31,6 +26,27 @@ async fn main() {
       return;
     }
   };
+
+  let runtime = match Builder::new_multi_thread()
+    .worker_threads(config.pool.threads)
+    .enable_all()
+    .build()
+  {
+    Ok(r) => r,
+    Err(err) => {
+      eprintln!("tokio runtime error: {err}");
+      return;
+    }
+  };
+
+  runtime.block_on(run(config));
+}
+
+async fn run(config: Config) {
+  tracing_subscriber::fmt()
+    .with_env_filter(EnvFilter::from_env("MSSNGR_LOG"))
+    .with_timer(ChronoLocal::new(TIMESTAMP_FMT.to_string()))
+    .init();
 
   let (msg_tx, msg_rx) = mpsc::channel(config.max_queue);
   let (listen_tx, listen_rx) = mpsc::channel(100);
@@ -61,7 +77,7 @@ async fn main() {
   );
 
   let rx = Arc::new(Mutex::new(msg_rx));
-  for _ in 0..config.workers {
+  for _ in 0..config.pool.brokers {
     let rx = rx.clone();
     tokio::spawn(worker::broker(rx, state.clone()));
   }

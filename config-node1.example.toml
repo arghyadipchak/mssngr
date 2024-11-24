@@ -2,9 +2,12 @@ id = "node1"
 host = "127.0.0.1"
 port = 8080
 topics = ["a"]
-max_queue = 1000
-workers = 4
+max_queue = 1024
 persistence = "5m"
+
+[pool]
+threads = 8
+brokers = 4
 
 [[forward]]
 id = "node2"
