@@ -1,0 +1,10 @@
+.git/
+target/
+
+.gitignore
+.rustfmt.toml
+config*.toml
+docker-compose.yml
+Dockerfile
+LICENSE
+README.md

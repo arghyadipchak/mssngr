@@ -1,0 +1,26 @@
+services:
+  node1:
+    build: .
+    image: mssngr:latest
+    container_name: mssngr-node1
+    restart: unless-stopped
+    environment:
+      MSSNGR_LOG: debug
+      TZ: Asia/Kolkata
+    volumes:
+      - ./config-node1.example.toml:/app/config.toml
+    ports:
+      - 8080:8080
+
+  node2:
+    build: .
+    image: mssngr:latest
+    container_name: mssngr-node2
+    restart: unless-stopped
+    environment:
+      MSSNGR_LOG: debug
+      TZ: Asia/Kolkata
+    volumes:
+      - ./config-node2.example.toml:/app/config.toml
+    ports:
+      - 8081:8081
