@@ -47,7 +47,8 @@ pub async fn publish(
     return match state.msg_tx.send(event).await {
       Ok(()) => {
         tracing::info!("message queued :: topic: {} | id: {}", topic, id);
-        StatusCode::CREATED
+        (StatusCode::CREATED, Json(serde_json::json!({ "id": id })))
+          .into_response()
       }
       Err(err) => {
         tracing::error!(
@@ -56,10 +57,9 @@ pub async fn publish(
           id,
           err
         );
-        StatusCode::INTERNAL_SERVER_ERROR
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
       }
-    }
-    .into_response();
+    };
   }
 
   if let Some(node) = state.fwd_map.get(&topic) {
