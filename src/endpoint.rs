@@ -1,3 +1,5 @@
+use std::{fmt::Display, str::FromStr};
+
 use axum::{
   extract::{ws::WebSocket, Path, Query, State, WebSocketUpgrade},
   http::StatusCode,
@@ -6,8 +8,7 @@ use axum::{
 };
 use chrono::Local;
 use futures_util::StreamExt;
-use serde::Deserialize;
-
+use serde::{de, Deserialize, Deserializer};
 use uuid::Uuid;
 
 use crate::model::{
@@ -21,35 +22,27 @@ pub async fn index() -> StatusCode {
 
 #[derive(Deserialize)]
 pub struct Payload {
-  topic: String,
   content: String,
 
   #[serde(default)]
   priority: Priority,
 }
 
-impl From<Payload> for MsgEvent {
-  fn from(payload: Payload) -> Self {
-    Self {
-      id: Uuid::new_v4(),
-      topic: payload.topic,
-      content: payload.content,
-      priority: payload.priority,
-      timestamp: Local::now(),
-    }
-  }
-}
-
 #[axum::debug_handler]
 pub async fn publish(
+  Path(topic): Path<String>,
   State(state): State<AppState>,
   Json(payload): Json<Payload>,
 ) -> Response {
-  let topic = payload.topic.clone();
-
   if state.topics.contains_key(&topic) {
-    let event = MsgEvent::from(payload);
-    let id = event.id;
+    let id = Uuid::new_v4();
+    let event = MsgEvent {
+      id,
+      topic: topic.clone(),
+      content: payload.content,
+      priority: payload.priority,
+      timestamp: Local::now(),
+    };
 
     return match state.msg_tx.send(event).await {
       Ok(()) => {
@@ -77,12 +70,12 @@ pub async fn publish(
       node.addr
     );
 
-    return Redirect::temporary(&format!("{}publish", node.addr))
+    return Redirect::temporary(&format!("{}publish/{topic}", node.addr))
       .into_response();
   }
 
   tracing::debug!("not found :: topic: {}", topic);
-  StatusCode::BAD_REQUEST.into_response()
+  StatusCode::BAD_GATEWAY.into_response()
 }
 
 #[axum::debug_handler]
@@ -151,4 +144,58 @@ async fn handle_ws(
       );
     }
   }
+}
+
+#[derive(Deserialize)]
+pub struct FetchQuery {
+  #[serde(deserialize_with = "deserialize_vec")]
+  id: Vec<Uuid>,
+}
+
+fn deserialize_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+  D: Deserializer<'de>,
+  T: FromStr,
+  T::Err: Display,
+{
+  String::deserialize(deserializer)?
+    .split(',')
+    .map(|item| item.trim().parse().map_err(de::Error::custom))
+    .collect()
+}
+
+#[axum::debug_handler]
+pub async fn fetch(
+  Path(topic): Path<String>,
+  Query(fq): Query<FetchQuery>,
+  State(state): State<AppState>,
+) -> Response {
+  if let Some(topic_state) = state.topics.get(&topic) {
+    tracing::info!("subcriber fetch :: topic: {}", topic);
+
+    let resp = fq
+      .id
+      .iter()
+      .filter_map(|id| {
+        topic_state.msg_events.get(id).map(|x| x.value().clone())
+      })
+      .collect::<Vec<_>>();
+
+    return Json(resp).into_response();
+  }
+
+  if let Some(node) = state.fwd_map.get(&topic) {
+    tracing::info!(
+      "redirection :: topic: {} | node: {} ({})",
+      topic,
+      node.id,
+      node.addr
+    );
+
+    return Redirect::temporary(&format!("{}fetch/{topic}", node.addr))
+      .into_response();
+  }
+
+  tracing::debug!("not found :: topic: {}", topic);
+  StatusCode::BAD_GATEWAY.into_response()
 }

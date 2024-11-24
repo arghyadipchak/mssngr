@@ -39,8 +39,9 @@ async fn main() {
 
   let app = Router::new()
     .route("/", routing::get(endpoint::index))
-    .route("/publish", routing::post(endpoint::publish))
+    .route("/publish/:topic", routing::post(endpoint::publish))
     .route("/subscribe/:topic", routing::get(endpoint::subscribe))
+    .route("/fetch/:topic", routing::get(endpoint::fetch))
     .with_state(state.clone())
     .layer(TraceLayer::new_for_http());
 
