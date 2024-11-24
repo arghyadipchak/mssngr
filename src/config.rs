@@ -4,7 +4,8 @@ use std::{
   time::Duration,
 };
 
-use serde::{Deserialize, Deserializer};
+use regex::Regex;
+use serde::{de, Deserialize, Deserializer};
 use url::Url;
 
 const fn default_host() -> IpAddr {
@@ -60,7 +61,28 @@ fn deserialize_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where
   D: Deserializer<'de>,
 {
-  Ok(Duration::from_secs(u64::deserialize(deserializer)?) * 60)
+  let re = Regex::new(r"(?i)(\d+)(d(ays?)?|h(ours?)?|m(ins?)?|s(ec(onds?)?)?)")
+    .map_err(de::Error::custom)?;
+  let input = String::deserialize(deserializer)?;
+
+  let (mut total_sec, mut total_len) = (0, 0);
+  for cap in re.captures_iter(input.trim()) {
+    let value = cap[1].parse::<u64>().map_err(de::Error::custom)?;
+    match &cap[2].to_lowercase()[..] {
+      "d" | "day" | "days" => total_sec += value * 86400,
+      "h" | "hour" | "hours" => total_sec += value * 3600,
+      "m" | "min" | "mins" => total_sec += value * 60,
+      "s" | "sec" | "secs" => total_sec += value,
+      _ => return Err(de::Error::custom("invalid unit")),
+    }
+    total_len += cap[0].len();
+  }
+
+  if input.chars().filter(|c| !c.is_whitespace()).count() == total_len {
+    Ok(Duration::from_secs(total_sec))
+  } else {
+    Err(de::Error::custom("invalid format"))
+  }
 }
 
 #[derive(Deserialize)]
